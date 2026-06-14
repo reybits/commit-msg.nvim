@@ -582,6 +582,11 @@ function M.cancel(buf)
     cancel_request(buf, false)
 end
 
+--- Read-only access to the current effective config (used by :checkhealth).
+function M.get_config()
+    return config
+end
+
 --- @param opts CommitMsgOpts|nil
 function M.setup(opts)
     config = vim.tbl_deep_extend("force", vim.deepcopy(defaults), opts or {})

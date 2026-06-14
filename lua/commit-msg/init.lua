@@ -111,12 +111,12 @@ function M.generate(buf, opts)
         wipe_draft(buf)
     else
         local first = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] or ""
-        if first:match("^%s*$") == nil then
+        if first:find("%S") then
             return
         end
     end
 
-    local api_key, key_name = resolve_api_key()
+    local api_key = resolve_api_key()
     if not api_key then
         local names = config.api_key_env
         if type(names) == "table" then
@@ -168,7 +168,7 @@ function M.generate(buf, opts)
         messages = { { role = "user", content = "Here is the staged diff:\n\n" .. diff } },
     }
     if type(config.thinking) == "table" then
-        payload.thinking = vim.tbl_extend("force", { type = "enabled" }, config.thinking)
+        payload.thinking = vim.tbl_extend("keep", config.thinking, { type = "enabled" })
     end
 
     local body = vim.json.encode(payload)
@@ -234,9 +234,6 @@ function M.generate(buf, opts)
             fail("failed to start curl:\n" .. tostring(err))
         end)
     end
-
-    -- Silence unused-var warning while keeping key_name reachable for future logging.
-    _ = key_name
 end
 
 --- @param opts CommitMsgOpts|nil

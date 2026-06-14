@@ -1,0 +1,129 @@
+*commit-msg.txt*  Conventional Commits draft from the staged diff via Anthropic.
+
+==============================================================================
+INTRODUCTION                                                      *commit-msg*
+
+commit-msg.nvim generates a Conventional Commits message from the staged
+diff using the Anthropic Messages API. When `git commit` opens a buffer
+with an empty draft, the staged diff is sent to the API and the result
+is inserted at the top of the buffer. The user keeps full control: edit,
+replace, or scrap it before saving.
+
+Requires Neovim 0.10+ and `curl` in $PATH.
+
+==============================================================================
+COMMANDS                                                 *commit-msg-commands*
+
+                                                              *:CommitMsgGen*
+:CommitMsgGen[!]
+    Generate a commit message for the current gitcommit buffer, wiping
+    any existing draft above the git template comments. With a bang
+    (|:CommitMsgGen!|) the disk cache is bypassed and a fresh API call
+    is made.
+
+                                                           *:CommitMsgCancel*
+:CommitMsgCancel
+    Cancel an in-flight generation for the current buffer. Removes the
+    spinner overlay and kills the underlying curl process.
+
+==============================================================================
+SETUP                                                       *commit-msg-setup*
+
+>lua
+    require("commit-msg").setup({
+        -- options; see |commit-msg-config|
+    })
+<
+
+==============================================================================
+CONFIGURATION                                              *commit-msg-config*
+
+All options are optional. Defaults shown below:
+
+`auto`              boolean (default: true)
+                    Auto-generate on FileType gitcommit. Set false to
+                    use only |:CommitMsgGen|.
+
+`api_url`           string (default: Anthropic messages endpoint)
+
+`api_key_env`       string|string[] (default: { "ANTHROPIC_API_KEY_COMMIT_MSG",
+                    "ANTHROPIC_API_KEY" })
+                    Env var name(s) to look up the API key. First
+                    non-empty wins.
+
+`model`             string (default: "claude-haiku-4-5")
+
+`max_tokens`        integer (default: 512)
+
+`timeout_ms`        integer (default: 35000)
+
+`system_prompt`     string (default: built-in Conventional Commits prompt)
+
+`prompt_extra`      string|nil (default: nil)
+                    Appended to system_prompt with a blank-line separator.
+                    Use for per-project conventions (ticket prefix, scope
+                    rule) without rewriting the default prompt.
+
+`thinking`          table|nil (default: nil)
+                    { budget_tokens = N } enables extended thinking on
+                    models that support it.
+
+`should_generate`   fun(buf):boolean|nil
+                    Predicate gating auto-generation. Return false to
+                    skip on a given buffer.
+
+`notify_usage`      boolean (default: false)
+                    On success, notify the model id and token usage from
+                    the API response.
+
+`max_diff_bytes`    integer (default: 200000)
+                    Truncate the diff before sending if it exceeds this
+                    many bytes. 0 or nil disables.
+
+`secret_scan`       "warn"|"abort"|false (default: "warn")
+                    Pre-flight scan for common credential patterns
+                    (AWS, Anthropic, Google, GitHub, Slack, PEM blocks).
+
+`include_paths`     boolean (default: true)
+                    Prepend the list of changed paths to the user
+                    message so the model picks a better scope.
+
+`cache`             boolean (default: true)
+                    Cache responses keyed by (model + system + user
+                    message) under stdpath('cache')/commit-msg.
+                    |:CommitMsgGen!| bypasses the lookup.
+
+`preview`           boolean (default: false)
+                    Show the result in a floating window with
+                    accept/regenerate/cancel keymaps instead of
+                    inserting immediately.
+
+==============================================================================
+PREVIEW                                                   *commit-msg-preview*
+
+When `preview = true`, the generated message opens in a centered
+floating window. The buffer is modifiable, so edits made there are kept
+on accept. Keymaps:
+
+    <CR> or a    accept (insert into the gitcommit buffer)
+    r            regenerate (bypasses the cache)
+    q or <Esc>   cancel (close without inserting)
+
+==============================================================================
+PER-BUFFER OPT-OUT                                           *b:commit_msg_skip*
+
+Set `vim.b.commit_msg_skip = true` to disable auto-generation for the
+current buffer. Useful for amend flows or buffers that should keep an
+existing message.
+
+==============================================================================
+HEALTH                                                     *commit-msg-health*
+
+>vim
+    :checkhealth commit-msg
+<
+Verifies Neovim version, curl, git, the API key env var, and the cache
+directory.
+
+==============================================================================
+vim:tw=78:ts=8:noet:ft=help:norl:

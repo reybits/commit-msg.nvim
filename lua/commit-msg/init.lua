@@ -29,6 +29,7 @@ local DEFAULT_SYSTEM_PROMPT = table.concat({
 --- @field secret_scan "warn"|"abort"|false|nil  Pre-flight scan for common credential patterns. "warn" notifies and sends, "abort" blocks the request, false skips the scan (default: "warn").
 --- @field include_paths boolean|nil   Prepend the list of changed paths to the user message so the model can pick a better scope (default: true).
 --- @field cache boolean|nil           Cache responses keyed by (model + system + user message) under stdpath('cache'). :CommitMsgGen! bypasses lookup (default: true).
+--- @field preview boolean|nil         Show the generated message in a floating window with accept/regenerate/cancel instead of inserting immediately (default: false).
 
 --- @type CommitMsgOpts
 local defaults = {
@@ -47,6 +48,7 @@ local defaults = {
     secret_scan = "warn",
     include_paths = true,
     cache = true,
+    preview = false,
 }
 
 local SECRET_PATTERNS = {
@@ -268,9 +270,92 @@ local function insert_message(buf, text)
     end
 end
 
+--- Map of main_buf -> { win, buf } for the preview window tied to that buffer.
+local previews = {}
+
+local function close_preview(main_buf)
+    local p = previews[main_buf]
+    if not p then
+        return
+    end
+    previews[main_buf] = nil
+    if p.win and vim.api.nvim_win_is_valid(p.win) then
+        vim.api.nvim_win_close(p.win, true)
+    end
+    if p.buf and vim.api.nvim_buf_is_valid(p.buf) then
+        vim.api.nvim_buf_delete(p.buf, { force = true })
+    end
+end
+
+local function show_preview(main_buf, text, on_accept, on_regenerate)
+    close_preview(main_buf)
+
+    local lines = vim.split(text, "\n", { plain = true })
+    local pbuf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(pbuf, 0, -1, false, lines)
+    vim.b[pbuf].commit_msg_skip = true
+    vim.bo[pbuf].filetype = "gitcommit"
+
+    local width = math.max(60, math.min(100, vim.o.columns - 10))
+    local height = math.max(5, math.min(20, #lines + 2))
+    local pwin = vim.api.nvim_open_win(pbuf, true, {
+        relative = "editor",
+        width = width,
+        height = height,
+        col = math.floor((vim.o.columns - width) / 2),
+        row = math.floor((vim.o.lines - height) / 2),
+        style = "minimal",
+        border = "rounded",
+        title = " commit-msg preview ",
+        title_pos = "center",
+        footer = " [<CR>/a] accept  [r] regenerate  [q/<Esc>] cancel ",
+        footer_pos = "center",
+    })
+
+    previews[main_buf] = { win = pwin, buf = pbuf }
+
+    local function accept()
+        if not (pbuf and vim.api.nvim_buf_is_valid(pbuf)) then
+            return
+        end
+        local edited = table.concat(vim.api.nvim_buf_get_lines(pbuf, 0, -1, false), "\n")
+        close_preview(main_buf)
+        on_accept(edited)
+    end
+
+    local function map(lhs, rhs)
+        vim.keymap.set("n", lhs, rhs, { buffer = pbuf, nowait = true, silent = true })
+    end
+    map("a", accept)
+    map("<CR>", accept)
+    map("r", function()
+        close_preview(main_buf)
+        on_regenerate()
+    end)
+    map("q", function()
+        close_preview(main_buf)
+    end)
+    map("<Esc>", function()
+        close_preview(main_buf)
+    end)
+end
+
+local function present_message(buf, text)
+    if config.preview then
+        show_preview(buf, text, function(final)
+            insert_message(buf, final)
+        end, function()
+            M.generate(buf, { force = true, no_cache = true })
+        end)
+    else
+        insert_message(buf, text)
+    end
+end
+
 local function send_request(buf, api_key, diff, req_opts)
     req_opts = req_opts or {}
     cancel_request(buf, true)
+    close_preview(buf)
 
     if config.secret_scan then
         local hit = scan_for_secrets(diff)
@@ -318,7 +403,7 @@ local function send_request(buf, api_key, diff, req_opts)
     if config.cache and not req_opts.no_cache then
         local hit = cache_lookup(cache_key)
         if hit then
-            insert_message(buf, hit)
+            present_message(buf, hit)
             notify("loaded from cache", vim.log.levels.INFO)
             return
         end
@@ -388,11 +473,10 @@ local function send_request(buf, api_key, diff, req_opts)
                 end
 
                 local text = info.text:gsub("```%w*\n?", ""):gsub("^%s+", ""):gsub("\n+$", "")
-                insert_message(buf, text)
-
                 if config.cache then
                     cache_store(cache_key, text)
                 end
+                present_message(buf, text)
 
                 if config.notify_usage and info.usage then
                     notify(
@@ -522,11 +606,12 @@ function M.setup(opts)
         })
     end
 
-    -- Free in-flight handles tied to a buffer that's going away.
+    -- Free in-flight handles and preview state tied to a buffer that's going away.
     vim.api.nvim_create_autocmd("BufWipeout", {
         group = group,
         callback = function(ev)
             cancel_request(ev.buf, true)
+            close_preview(ev.buf)
         end,
     })
 

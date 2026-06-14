@@ -1,5 +1,13 @@
 local M = {}
 
+local function parse_curl_version(s)
+    local maj, min = s:match("^(%d+)%.(%d+)")
+    if not maj then
+        return nil
+    end
+    return tonumber(maj), tonumber(min)
+end
+
 local function check_curl()
     if vim.fn.executable("curl") ~= 1 then
         vim.health.error("`curl` not found in $PATH; required for API calls")
@@ -7,6 +15,20 @@ local function check_curl()
     end
     local out = vim.fn.system({ "curl", "--version" })
     local version = out:match("curl ([%w.]+)") or "unknown"
+    local maj, min = parse_curl_version(version)
+    if not maj then
+        vim.health.warn("could not parse curl version (" .. version .. ")")
+        return
+    end
+    -- 7.55 introduced `-H @<file>`, which we rely on to keep the API key
+    -- out of argv. Earlier curl would treat `@file` as a literal header
+    -- value and the API call would fail.
+    if maj < 7 or (maj == 7 and min < 55) then
+        vim.health.error(
+            "curl " .. version .. " is too old; need >= 7.55 for `-H @file` (used to pass the API key without exposing it in argv)"
+        )
+        return
+    end
     vim.health.ok("curl found (" .. version .. ")")
 end
 

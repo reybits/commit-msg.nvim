@@ -22,6 +22,7 @@ local DEFAULT_SYSTEM_PROMPT = table.concat({
 --- @field timeout_ms integer|nil       Hard cap on the curl call (default: 35000).
 --- @field system_prompt string|nil     System prompt override.
 --- @field thinking table|nil           { budget_tokens = N } to enable extended thinking. nil = disabled.
+--- @field should_generate fun(buf:integer):boolean|nil  Predicate gating auto-generation; return false to skip.
 
 --- @type CommitMsgOpts
 local defaults = {
@@ -33,6 +34,7 @@ local defaults = {
     timeout_ms = 35000,
     system_prompt = DEFAULT_SYSTEM_PROMPT,
     thinking = nil,
+    should_generate = nil,
 }
 
 --- @type CommitMsgOpts
@@ -362,6 +364,15 @@ function M.setup(opts)
             group = group,
             pattern = "gitcommit",
             callback = function(ev)
+                if vim.b[ev.buf].commit_msg_skip then
+                    return
+                end
+                if type(config.should_generate) == "function" then
+                    local ok, allow = pcall(config.should_generate, ev.buf)
+                    if not ok or allow == false then
+                        return
+                    end
+                end
                 M.generate(ev.buf)
             end,
         })

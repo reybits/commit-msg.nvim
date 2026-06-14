@@ -89,7 +89,15 @@ end
 
 local function cache_store(key, text)
     local path = vim.fs.joinpath(cache_dir(), key)
-    pcall(vim.fn.writefile, vim.split(text, "\n", { plain = true }), path, "b")
+    local tmp = path .. ".tmp"
+    local ok = pcall(vim.fn.writefile, vim.split(text, "\n", { plain = true }), tmp, "b")
+    if not ok then
+        return
+    end
+    local renamed_ok, renamed = pcall(vim.uv.fs_rename, tmp, path)
+    if not renamed_ok or not renamed then
+        pcall(vim.uv.fs_unlink, tmp)
+    end
 end
 
 --- Extract the b-side file paths from a unified diff header sequence.

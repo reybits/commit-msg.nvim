@@ -303,10 +303,13 @@ local function show_placeholder(buf)
     end
     stop_spinner_timer(buf)
 
+    local timer
     local frame = 1
     local function render()
-        if not vim.api.nvim_buf_is_valid(buf) then
-            stop_spinner_timer(buf)
+        -- Identity check: a tick scheduled before stop_spinner_timer ran could
+        -- otherwise re-create the extmark right after clear_placeholder wiped
+        -- the namespace, leaving the spinner on screen forever.
+        if not vim.api.nvim_buf_is_valid(buf) or spinner_timers[buf] ~= timer then
             return
         end
         local label = SPINNER_FRAMES[frame] .. " generating commit message..."
@@ -319,12 +322,12 @@ local function show_placeholder(buf)
         frame = frame % #SPINNER_FRAMES + 1
     end
 
-    render()
-    local timer = vim.uv.new_timer()
+    timer = vim.uv.new_timer()
     if not timer then
         return
     end
     spinner_timers[buf] = timer
+    render()
     timer:start(SPINNER_INTERVAL_MS, SPINNER_INTERVAL_MS, vim.schedule_wrap(render))
 end
 

@@ -27,6 +27,7 @@ local DEFAULT_SYSTEM_PROMPT = table.concat({
 --- @field notify_usage boolean|nil     Notify model id and token usage on success (default: false).
 --- @field max_diff_bytes integer|nil   Truncate the diff before sending if it exceeds this many bytes. 0 or nil disables.
 --- @field secret_scan "warn"|"abort"|false|nil  Pre-flight scan for common credential patterns. "warn" notifies and sends, "abort" blocks the request, false skips the scan (default: "warn").
+--- @field include_paths boolean|nil   Prepend the list of changed paths to the user message so the model can pick a better scope (default: true).
 
 --- @type CommitMsgOpts
 local defaults = {
@@ -43,6 +44,7 @@ local defaults = {
     notify_usage = false,
     max_diff_bytes = 200000,
     secret_scan = "warn",
+    include_paths = true,
 }
 
 local SECRET_PATTERNS = {
@@ -61,6 +63,18 @@ local function scan_for_secrets(diff)
         end
     end
     return nil
+end
+
+--- Extract the b-side file paths from a unified diff header sequence.
+local function extract_paths(diff)
+    local paths, seen = {}, {}
+    for path in (diff .. "\n"):gmatch("diff %-%-git a/%S+ b/(%S+)\n") do
+        if not seen[path] then
+            seen[path] = true
+            table.insert(paths, path)
+        end
+    end
+    return paths
 end
 
 --- @type CommitMsgOpts
@@ -253,11 +267,22 @@ local function send_request(buf, api_key, diff)
         system = system .. "\n\n" .. config.prompt_extra
     end
 
+    local user_msg = "Here is the staged diff:\n\n" .. diff
+    if config.include_paths then
+        local paths = extract_paths(diff)
+        if #paths > 0 then
+            user_msg = "Changed files:\n"
+                .. table.concat(paths, "\n")
+                .. "\n\n"
+                .. user_msg
+        end
+    end
+
     local payload = {
         model = config.model,
         max_tokens = config.max_tokens,
         system = system,
-        messages = { { role = "user", content = "Here is the staged diff:\n\n" .. diff } },
+        messages = { { role = "user", content = user_msg } },
     }
     if type(config.thinking) == "table" then
         payload.thinking = vim.tbl_extend("keep", config.thinking, { type = "enabled" })

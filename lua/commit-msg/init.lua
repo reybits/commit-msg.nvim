@@ -137,6 +137,35 @@ local function resolve_api_key()
     return nil, nil
 end
 
+--- Write the x-api-key header to a chmod-600 temp file so that the
+--- key never appears in argv (which is visible to other local users
+--- via ps / /proc/<pid>/cmdline). curl reads the header back via
+--- `-H @<file>` (supported since curl 7.55).
+local function write_header_file(api_key)
+    if api_key:find("[\n\r]") then
+        return nil, "API key must not contain newlines"
+    end
+    local path = vim.fn.tempname()
+    local fd, oerr = vim.uv.fs_open(path, "w", tonumber("600", 8))
+    if not fd then
+        return nil, oerr or "fs_open failed"
+    end
+    local content = "x-api-key: " .. api_key .. "\n"
+    local ok, werr = pcall(vim.uv.fs_write, fd, content, 0)
+    vim.uv.fs_close(fd)
+    if not ok then
+        pcall(vim.uv.fs_unlink, path)
+        return nil, tostring(werr)
+    end
+    return path, nil
+end
+
+local function unlink_safe(path)
+    if path then
+        pcall(vim.uv.fs_unlink, path)
+    end
+end
+
 local function parse_response(stdout)
     local ok, decoded = pcall(vim.json.decode, stdout)
     if not ok or type(decoded) ~= "table" then
@@ -283,8 +312,8 @@ end
 
 --- @return boolean killed
 local function cancel_request(buf, silent)
-    local sys = active[buf]
-    if not sys then
+    local rec = active[buf]
+    if not rec then
         if not silent then
             notify("nothing to cancel")
         end
@@ -292,8 +321,9 @@ local function cancel_request(buf, silent)
     end
     active[buf] = nil
     pcall(function()
-        sys:kill(15)
+        rec.sys:kill(15)
     end)
+    unlink_safe(rec.header_file)
     clear_placeholder(buf)
     return true
 end
@@ -449,8 +479,6 @@ local function send_request(buf, api_key, diff, req_opts)
         end
     end
 
-    show_placeholder(buf)
-
     local payload = {
         model = config.model,
         max_tokens = config.max_tokens,
@@ -465,6 +493,14 @@ local function send_request(buf, api_key, diff, req_opts)
     -- Use a small curl timeout below the vim.system one so curl's own message wins on TLE.
     local curl_timeout = math.max(5, math.floor(config.timeout_ms / 1000) - 5)
 
+    local header_file, herr = write_header_file(api_key)
+    if not header_file then
+        notify("failed to write header file: " .. tostring(herr), vim.log.levels.ERROR)
+        return
+    end
+
+    show_placeholder(buf)
+
     local sys
     local ok, err_or_sys = pcall(
         vim.system,
@@ -477,7 +513,7 @@ local function send_request(buf, api_key, diff, req_opts)
             "-H",
             "content-type: application/json",
             "-H",
-            "x-api-key: " .. api_key,
+            "@" .. header_file,
             "-H",
             "anthropic-version: 2023-06-01",
             "-d",
@@ -485,8 +521,12 @@ local function send_request(buf, api_key, diff, req_opts)
         },
         { text = true, stdin = body, timeout = config.timeout_ms },
         function(res)
+            -- The temp file held the api key; unlink it as soon as curl is done,
+            -- regardless of whether the request is still the active one.
+            unlink_safe(header_file)
             vim.schedule(function()
-                if active[buf] ~= sys then
+                local rec = active[buf]
+                if not rec or rec.sys ~= sys then
                     -- cancelled or superseded by a newer request
                     return
                 end
@@ -534,6 +574,7 @@ local function send_request(buf, api_key, diff, req_opts)
     )
 
     if not ok then
+        unlink_safe(header_file)
         vim.schedule(function()
             clear_placeholder(buf)
             fail(buf, "failed to start curl:\n" .. tostring(err_or_sys))
@@ -542,7 +583,7 @@ local function send_request(buf, api_key, diff, req_opts)
     end
 
     sys = err_or_sys
-    active[buf] = sys
+    active[buf] = { sys = sys, header_file = header_file }
 end
 
 --- @param buf integer|nil

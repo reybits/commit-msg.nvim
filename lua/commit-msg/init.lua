@@ -619,19 +619,6 @@ function M.setup(opts)
             close_preview(ev.buf)
         end,
     })
-
-    vim.api.nvim_create_user_command("CommitMsgGen", function(o)
-        M.generate(nil, { force = true, no_cache = o.bang })
-    end, {
-        bang = true,
-        desc = "Generate a commit message via the Anthropic API (overwrites the current draft). :CommitMsgGen! bypasses the cache.",
-    })
-
-    vim.api.nvim_create_user_command("CommitMsgCancel", function()
-        M.cancel(nil)
-    end, {
-        desc = "Cancel an in-flight commit message generation for the current buffer",
-    })
 end
 
 return M

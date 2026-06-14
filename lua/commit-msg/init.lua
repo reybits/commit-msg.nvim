@@ -41,6 +41,9 @@ local config = vim.deepcopy(defaults)
 --- Map of buf -> SystemObj for the curl request currently in flight.
 local active = {}
 
+--- Dedicated namespace for the "generating..." spinner overlay.
+local ns = vim.api.nvim_create_namespace("commit_msg_spinner")
+
 local function notify(msg, level)
     vim.notify("commit-msg: " .. msg, level or vim.log.levels.WARN)
 end
@@ -99,14 +102,21 @@ local function wipe_draft(buf)
     end
 end
 
+local function show_placeholder(buf)
+    if not vim.api.nvim_buf_is_valid(buf) then
+        return
+    end
+    vim.api.nvim_buf_set_extmark(buf, ns, 0, 0, {
+        virt_lines = { { { "⏳ generating commit message...", "Comment" } } },
+        virt_lines_above = true,
+    })
+end
+
 local function clear_placeholder(buf)
     if not vim.api.nvim_buf_is_valid(buf) then
         return false
     end
-    local l0 = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] or ""
-    if l0:match("generating commit message") then
-        vim.api.nvim_buf_set_lines(buf, 0, 1, false, {})
-    end
+    vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
     return true
 end
 
@@ -143,7 +153,7 @@ end
 local function send_request(buf, api_key, diff)
     cancel_request(buf, true)
 
-    vim.api.nvim_buf_set_lines(buf, 0, 0, false, { "# ⏳ generating commit message..." })
+    show_placeholder(buf)
 
     local payload = {
         model = config.model,

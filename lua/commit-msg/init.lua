@@ -63,12 +63,13 @@ local SECRET_PATTERNS = {
 }
 
 local function scan_for_secrets(diff)
+    local hits = {}
     for _, p in ipairs(SECRET_PATTERNS) do
         if diff:find(p[2]) then
-            return p[1]
+            table.insert(hits, p[1])
         end
     end
-    return nil
+    return hits
 end
 
 local function cache_dir()
@@ -467,17 +468,18 @@ local function send_request(buf, api_key, diff, req_opts)
     close_preview(buf)
 
     if config.secret_scan then
-        local hit = scan_for_secrets(diff)
-        if hit then
+        local hits = scan_for_secrets(diff)
+        if #hits > 0 then
+            local list = table.concat(hits, ", ")
             if config.secret_scan == "abort" then
                 notify(
-                    "aborting: possible " .. hit .. " in diff (set secret_scan=false to override)",
+                    "aborting: possible secrets in diff (" .. list .. "); set secret_scan=false to override",
                     vim.log.levels.ERROR
                 )
                 return
             end
             notify(
-                "possible " .. hit .. " in diff; sending anyway (set secret_scan=false to silence)",
+                "possible secrets in diff (" .. list .. "); sending anyway (set secret_scan=false to silence)",
                 vim.log.levels.WARN
             )
         end

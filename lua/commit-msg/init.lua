@@ -469,7 +469,13 @@ local function send_request(buf, api_key, diff, req_opts)
         end
     end
 
-    local cache_key = vim.fn.sha256(config.model .. "|" .. system .. "|" .. user_msg)
+    local cache_key = vim.fn.sha256(table.concat({
+        config.model,
+        tostring(config.max_tokens),
+        vim.json.encode(config.thinking or vim.NIL),
+        system,
+        user_msg,
+    }, "|"))
     if config.cache and not req_opts.no_cache then
         local hit = cache_lookup(cache_key)
         if hit then

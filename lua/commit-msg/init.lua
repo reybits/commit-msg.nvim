@@ -100,11 +100,40 @@ local function cache_store(key, text)
     end
 end
 
+--- Decode the basic escape sequences git emits in quoted paths
+--- ("\\\\", "\\\"", "\\t", "\\n", "\\NNN" octal). Good enough for the
+--- common cases (spaces, UTF-8 bytes); does not handle escaped quotes
+--- inside the path itself.
+local function unescape_git_path(s)
+    s = s:gsub("\\([0-3][0-7][0-7])", function(o)
+        return string.char(tonumber(o, 8))
+    end)
+    s = s:gsub("\\(.)", function(c)
+        if c == "t" then
+            return "\t"
+        elseif c == "n" then
+            return "\n"
+        elseif c == "r" then
+            return "\r"
+        end
+        return c
+    end)
+    return s
+end
+
 --- Extract the b-side file paths from a unified diff header sequence.
+--- Supports both unquoted (`diff --git a/foo b/foo`) and quoted
+--- (`diff --git "a/foo bar" "b/foo bar"`) forms.
 local function extract_paths(diff)
     local paths, seen = {}, {}
-    for path in (diff .. "\n"):gmatch("diff %-%-git a/%S+ b/(%S+)\n") do
-        if not seen[path] then
+    for line in (diff .. "\n"):gmatch("[^\n]+") do
+        local path = line:match('^diff %-%-git "a/.-" "b/(.-)"$')
+        if path then
+            path = unescape_git_path(path)
+        else
+            path = line:match("^diff %-%-git a/%S+ b/(%S+)$")
+        end
+        if path and not seen[path] then
             seen[path] = true
             table.insert(paths, path)
         end

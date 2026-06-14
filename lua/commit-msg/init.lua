@@ -617,7 +617,7 @@ local function send_request(buf, api_key, diff, req_opts)
                 end
 
                 if res.code == nil then
-                    fail(buf, "request timed out (no response).")
+                    fail(buf, "request timed out (no response)")
                     return
                 end
                 if res.code ~= 0 then

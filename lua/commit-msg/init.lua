@@ -23,6 +23,7 @@ local DEFAULT_SYSTEM_PROMPT = table.concat({
 --- @field system_prompt string|nil     System prompt override.
 --- @field thinking table|nil           { budget_tokens = N } to enable extended thinking. nil = disabled.
 --- @field should_generate fun(buf:integer):boolean|nil  Predicate gating auto-generation; return false to skip.
+--- @field notify_usage boolean|nil     Notify model id and token usage on success (default: false).
 
 --- @type CommitMsgOpts
 local defaults = {
@@ -35,6 +36,7 @@ local defaults = {
     system_prompt = DEFAULT_SYSTEM_PROMPT,
     thinking = nil,
     should_generate = nil,
+    notify_usage = false,
 }
 
 --- @type CommitMsgOpts
@@ -64,7 +66,7 @@ local function resolve_api_key()
     return nil, nil
 end
 
-local function extract_text(stdout)
+local function parse_response(stdout)
     local ok, decoded = pcall(vim.json.decode, stdout)
     if not ok or type(decoded) ~= "table" then
         return nil, "could not parse API JSON:\n" .. (stdout or "")
@@ -91,7 +93,11 @@ local function extract_text(stdout)
     if #parts == 0 then
         return nil, "API returned no text block"
     end
-    return table.concat(parts, "\n\n"), nil
+    return {
+        text = table.concat(parts, "\n\n"),
+        model = decoded.model,
+        usage = decoded.usage,
+    }, nil
 end
 
 --- Find the first line that looks like the start of the git commit template.
@@ -247,19 +253,31 @@ local function send_request(buf, api_key, diff)
                     return
                 end
 
-                local text, perr = extract_text(res.stdout or "")
-                if not text then
+                local info, perr = parse_response(res.stdout or "")
+                if not info then
                     fail(buf, perr)
                     return
                 end
 
-                text = text:gsub("```%w*\n?", ""):gsub("^%s+", ""):gsub("\n+$", "")
+                local text = info.text:gsub("```%w*\n?", ""):gsub("^%s+", ""):gsub("\n+$", "")
                 local lines = vim.split(text, "\n", { plain = true })
                 vim.api.nvim_buf_set_lines(buf, 0, 0, false, lines)
 
                 local win = vim.fn.bufwinid(buf)
                 if win ~= -1 then
                     vim.api.nvim_win_set_cursor(win, { 1, #(lines[1] or "") })
+                end
+
+                if config.notify_usage and info.usage then
+                    notify(
+                        string.format(
+                            "%s | in=%s out=%s",
+                            info.model or config.model,
+                            tostring(info.usage.input_tokens or "?"),
+                            tostring(info.usage.output_tokens or "?")
+                        ),
+                        vim.log.levels.INFO
+                    )
                 end
             end)
         end

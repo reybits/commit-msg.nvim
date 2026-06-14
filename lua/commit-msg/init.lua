@@ -340,11 +340,44 @@ local function clear_placeholder(buf)
     return true
 end
 
+--- Remove any "# commit-msg failed:" blocks left above the git template
+--- from previous failed attempts so that retries don't pile them up.
+local function strip_failed_blocks(buf)
+    local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    local template_start = find_template_start(lines) or (#lines + 1)
+
+    local kept = {}
+    local i = 1
+    while i < template_start do
+        if lines[i] == "# commit-msg failed:" then
+            i = i + 1
+            while i < template_start and lines[i]:match("^#") do
+                local at_end = lines[i]
+                    == "# Write the message manually, or retry with :CommitMsgGen."
+                i = i + 1
+                if at_end then
+                    break
+                end
+            end
+        else
+            table.insert(kept, lines[i])
+            i = i + 1
+        end
+    end
+    for j = template_start, #lines do
+        table.insert(kept, lines[j])
+    end
+    if #kept ~= #lines then
+        vim.api.nvim_buf_set_lines(buf, 0, -1, false, kept)
+    end
+end
+
 local function fail(buf, msg)
     notify(msg, vim.log.levels.ERROR)
     if not vim.api.nvim_buf_is_valid(buf) then
         return
     end
+    strip_failed_blocks(buf)
     local lines = { "# commit-msg failed:" }
     for _, l in ipairs(vim.split(msg, "\n", { plain = true })) do
         table.insert(lines, "# " .. l)

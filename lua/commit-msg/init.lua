@@ -52,7 +52,9 @@ local defaults = {
 }
 
 local SECRET_PATTERNS = {
-    { "AWS access key", "AKIA[0-9A-Z]+" },
+    -- Real AWS Access Key IDs are AKIA + exactly 16 uppercase alphanumerics.
+    -- Using string.rep keeps the pattern readable; Lua has no {16} quantifier.
+    { "AWS access key", "AKIA" .. string.rep("[0-9A-Z]", 16) },
     { "Anthropic API key", "sk%-ant%-[%w_%-]+" },
     { "Google API key", "AIza[%w_%-]+" },
     { "GitHub token", "gh[pousr]_[%w]+" },

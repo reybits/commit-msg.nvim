@@ -505,11 +505,10 @@ local function present_message(buf, text)
     end
 end
 
-local function send_request(buf, api_key, diff, req_opts)
-    req_opts = req_opts or {}
-    cancel_request(buf, true)
-    close_preview(buf)
-
+--- Run secret_scan and truncate the diff per max_diff_bytes.
+--- Returns the (possibly truncated) diff, or nil if the caller should
+--- abort (secret_scan == "abort" with a hit).
+local function preprocess_diff(diff)
     if config.secret_scan then
         local hits = scan_for_secrets(diff)
         if #hits > 0 then
@@ -519,7 +518,7 @@ local function send_request(buf, api_key, diff, req_opts)
                     "aborting: possible secrets in diff (" .. list .. "); set secret_scan=false to override",
                     vim.log.levels.ERROR
                 )
-                return
+                return nil
             end
             notify(
                 "possible secrets in diff (" .. list .. "); sending anyway (set secret_scan=false to silence)",
@@ -537,6 +536,11 @@ local function send_request(buf, api_key, diff, req_opts)
         diff = diff:sub(1, limit) .. "\n\n[... diff truncated]"
     end
 
+    return diff
+end
+
+--- Compose the final system and user messages, plus the cache key.
+local function build_messages(diff)
     local system = config.system_prompt or ""
     if type(config.prompt_extra) == "string" and config.prompt_extra ~= "" then
         system = system .. "\n\n" .. config.prompt_extra
@@ -560,15 +564,11 @@ local function send_request(buf, api_key, diff, req_opts)
         system,
         user_msg,
     }, "|"))
-    if config.cache and not req_opts.no_cache then
-        local hit = cache_lookup(cache_key)
-        if hit then
-            present_message(buf, hit)
-            notify("loaded from cache", vim.log.levels.INFO)
-            return
-        end
-    end
 
+    return system, user_msg, cache_key
+end
+
+local function build_payload(system, user_msg)
     local payload = {
         model = config.model,
         max_tokens = config.max_tokens,
@@ -578,11 +578,49 @@ local function send_request(buf, api_key, diff, req_opts)
     if type(config.thinking) == "table" then
         payload.thinking = vim.tbl_extend("keep", config.thinking, { type = "enabled" })
     end
+    return payload
+end
 
-    local body = vim.json.encode(payload)
-    -- Use a small curl timeout below the vim.system one so curl's own message wins on TLE.
-    local curl_timeout = math.max(5, math.floor(config.timeout_ms / 1000) - 5)
+local function handle_response(buf, res, cache_key)
+    if res.code == nil then
+        fail(buf, "request timed out (no response)")
+        return
+    end
+    if res.code ~= 0 then
+        local detail = (res.stderr ~= nil and res.stderr ~= "") and res.stderr
+            or ("curl exited with code " .. tostring(res.code))
+        fail(buf, detail)
+        return
+    end
 
+    local info, perr = parse_response(res.stdout or "")
+    if not info then
+        fail(buf, perr)
+        return
+    end
+
+    local text = info.text:gsub("```%w*\n?", ""):gsub("^%s+", ""):gsub("\n+$", "")
+    if config.cache then
+        cache_store(cache_key, text)
+    end
+    present_message(buf, text)
+
+    if config.notify_usage and info.usage then
+        notify(
+            string.format(
+                "%s | in=%s out=%s",
+                info.model or config.model,
+                tostring(info.usage.input_tokens or "?"),
+                tostring(info.usage.output_tokens or "?")
+            ),
+            vim.log.levels.INFO
+        )
+    end
+end
+
+--- Fire the curl request and wire up its callback. Caller owns the
+--- placeholder lifetime (already shown, will be cleared in the callback).
+local function dispatch_request(buf, api_key, body, cache_key)
     local header_file, herr = write_header_file(api_key)
     if not header_file then
         notify("failed to write header file: " .. tostring(herr), vim.log.levels.ERROR)
@@ -590,6 +628,9 @@ local function send_request(buf, api_key, diff, req_opts)
     end
 
     show_placeholder(buf)
+
+    -- curl finishes a bit earlier than vim.system, so curl's own error wins on TLE.
+    local curl_timeout = math.max(5, math.floor(config.timeout_ms / 1000) - 5)
 
     local sys
     local ok, err_or_sys = pcall(
@@ -611,8 +652,6 @@ local function send_request(buf, api_key, diff, req_opts)
         },
         { text = true, stdin = body, timeout = config.timeout_ms },
         function(res)
-            -- The temp file held the api key; unlink it as soon as curl is done,
-            -- regardless of whether the request is still the active one.
             unlink_safe(header_file)
             vim.schedule(function()
                 local s = state[buf]
@@ -625,41 +664,7 @@ local function send_request(buf, api_key, diff, req_opts)
                 if not clear_placeholder(buf) then
                     return
                 end
-
-                if res.code == nil then
-                    fail(buf, "request timed out (no response)")
-                    return
-                end
-                if res.code ~= 0 then
-                    local detail = (res.stderr ~= nil and res.stderr ~= "") and res.stderr
-                        or ("curl exited with code " .. tostring(res.code))
-                    fail(buf, detail)
-                    return
-                end
-
-                local info, perr = parse_response(res.stdout or "")
-                if not info then
-                    fail(buf, perr)
-                    return
-                end
-
-                local text = info.text:gsub("```%w*\n?", ""):gsub("^%s+", ""):gsub("\n+$", "")
-                if config.cache then
-                    cache_store(cache_key, text)
-                end
-                present_message(buf, text)
-
-                if config.notify_usage and info.usage then
-                    notify(
-                        string.format(
-                            "%s | in=%s out=%s",
-                            info.model or config.model,
-                            tostring(info.usage.input_tokens or "?"),
-                            tostring(info.usage.output_tokens or "?")
-                        ),
-                        vim.log.levels.INFO
-                    )
-                end
+                handle_response(buf, res, cache_key)
             end)
         end
     )
@@ -677,6 +682,31 @@ local function send_request(buf, api_key, diff, req_opts)
     local s = get_state(buf)
     s.sys = sys
     s.header_file = header_file
+end
+
+local function send_request(buf, api_key, diff, req_opts)
+    req_opts = req_opts or {}
+    cancel_request(buf, true)
+    close_preview(buf)
+
+    diff = preprocess_diff(diff)
+    if not diff then
+        return
+    end
+
+    local system, user_msg, cache_key = build_messages(diff)
+
+    if config.cache and not req_opts.no_cache then
+        local hit = cache_lookup(cache_key)
+        if hit then
+            present_message(buf, hit)
+            notify("loaded from cache", vim.log.levels.INFO)
+            return
+        end
+    end
+
+    local body = vim.json.encode(build_payload(system, user_msg))
+    dispatch_request(buf, api_key, body, cache_key)
 end
 
 --- @param buf integer|nil

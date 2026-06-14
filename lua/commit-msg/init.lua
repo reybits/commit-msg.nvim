@@ -113,6 +113,12 @@ local active = {}
 --- Dedicated namespace for the "generating..." spinner overlay.
 local ns = vim.api.nvim_create_namespace("commit_msg_spinner")
 
+local SPINNER_FRAMES = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+local SPINNER_INTERVAL_MS = 100
+
+--- Map of buf -> uv_timer animating the spinner overlay.
+local spinner_timers = {}
+
 local function notify(msg, level)
     vim.notify("commit-msg: " .. msg, level or vim.log.levels.WARN)
 end
@@ -210,17 +216,51 @@ local function wipe_draft(buf)
     end
 end
 
+local function stop_spinner_timer(buf)
+    local timer = spinner_timers[buf]
+    if not timer then
+        return
+    end
+    spinner_timers[buf] = nil
+    pcall(function()
+        timer:stop()
+        timer:close()
+    end)
+end
+
 local function show_placeholder(buf)
     if not vim.api.nvim_buf_is_valid(buf) then
         return
     end
-    vim.api.nvim_buf_set_extmark(buf, ns, 0, 0, {
-        virt_lines = { { { "⏳ generating commit message...", "Comment" } } },
-        virt_lines_above = true,
-    })
+    stop_spinner_timer(buf)
+
+    local frame = 1
+    local function render()
+        if not vim.api.nvim_buf_is_valid(buf) then
+            stop_spinner_timer(buf)
+            return
+        end
+        local label = SPINNER_FRAMES[frame] .. " generating commit message..."
+        vim.api.nvim_buf_set_extmark(buf, ns, 0, 0, {
+            id = 1,
+            virt_text = { { label, "DiagnosticHint" } },
+            virt_text_pos = "eol",
+            hl_mode = "combine",
+        })
+        frame = frame % #SPINNER_FRAMES + 1
+    end
+
+    render()
+    local timer = vim.uv.new_timer()
+    if not timer then
+        return
+    end
+    spinner_timers[buf] = timer
+    timer:start(SPINNER_INTERVAL_MS, SPINNER_INTERVAL_MS, vim.schedule_wrap(render))
 end
 
 local function clear_placeholder(buf)
+    stop_spinner_timer(buf)
     if not vim.api.nvim_buf_is_valid(buf) then
         return false
     end

@@ -110,7 +110,7 @@ Verifies Neovim version, `curl`, `git`, the API key env var, and the cache direc
 1. On `FileType gitcommit` (or when `:CommitMsgGen` runs), `git diff --staged` is invoked asynchronously in the buffer's repository.
 2. The diff is sent to the Anthropic Messages API with a system prompt that constrains the output to a Conventional Commits message.
 3. The response is post-processed (markdown fences stripped, whitespace trimmed) and either inserted at the top of the buffer or shown in a preview window.
-4. The placeholder `⏳ generating commit message...` is shown as a virtual line during the call and removed afterwards. Since it is a virtual line (extmark), it never touches the buffer text.
+4. An animated braille spinner (`⠋ generating commit message...`) is shown as virtual text on the first line while the API call is in flight and removed afterwards. Since it is rendered through an extmark, it never touches the buffer text and survives whatever the cursor is doing.
 
 ## License
 

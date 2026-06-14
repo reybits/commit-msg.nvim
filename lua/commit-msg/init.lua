@@ -252,13 +252,13 @@ local function send_request(buf, api_key, diff)
                 end
 
                 text = text:gsub("```%w*\n?", ""):gsub("^%s+", ""):gsub("\n+$", "")
-                vim.api.nvim_buf_set_lines(
-                    buf,
-                    0,
-                    0,
-                    false,
-                    vim.split(text, "\n", { plain = true })
-                )
+                local lines = vim.split(text, "\n", { plain = true })
+                vim.api.nvim_buf_set_lines(buf, 0, 0, false, lines)
+
+                local win = vim.fn.bufwinid(buf)
+                if win ~= -1 then
+                    vim.api.nvim_win_set_cursor(win, { 1, #(lines[1] or "") })
+                end
             end)
         end
     )

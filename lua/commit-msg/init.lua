@@ -21,6 +21,7 @@ local DEFAULT_SYSTEM_PROMPT = table.concat({
 --- @field max_tokens integer|nil       Output cap (default: 512).
 --- @field timeout_ms integer|nil       Hard cap on the curl call (default: 35000).
 --- @field system_prompt string|nil     System prompt override.
+--- @field prompt_extra string|nil      Appended to system_prompt with a blank line separator. Use for project conventions without rewriting the default prompt.
 --- @field thinking table|nil           { budget_tokens = N } to enable extended thinking. nil = disabled.
 --- @field should_generate fun(buf:integer):boolean|nil  Predicate gating auto-generation; return false to skip.
 --- @field notify_usage boolean|nil     Notify model id and token usage on success (default: false).
@@ -36,6 +37,7 @@ local defaults = {
     max_tokens = 512,
     timeout_ms = 35000,
     system_prompt = DEFAULT_SYSTEM_PROMPT,
+    prompt_extra = nil,
     thinking = nil,
     should_generate = nil,
     notify_usage = false,
@@ -246,10 +248,15 @@ local function send_request(buf, api_key, diff)
 
     show_placeholder(buf)
 
+    local system = config.system_prompt or ""
+    if type(config.prompt_extra) == "string" and config.prompt_extra ~= "" then
+        system = system .. "\n\n" .. config.prompt_extra
+    end
+
     local payload = {
         model = config.model,
         max_tokens = config.max_tokens,
-        system = config.system_prompt,
+        system = system,
         messages = { { role = "user", content = "Here is the staged diff:\n\n" .. diff } },
     }
     if type(config.thinking) == "table" then

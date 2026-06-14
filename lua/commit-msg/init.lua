@@ -38,6 +38,9 @@ local defaults = {
 --- @type CommitMsgOpts
 local config = vim.deepcopy(defaults)
 
+--- Map of buf -> SystemObj for the curl request currently in flight.
+local active = {}
+
 local function notify(msg, level)
     vim.notify("commit-msg: " .. msg, level or vim.log.levels.WARN)
 end
@@ -120,7 +123,26 @@ local function fail(buf, msg)
     vim.api.nvim_buf_set_lines(buf, 0, 0, false, lines)
 end
 
+--- @return boolean killed
+local function cancel_request(buf, silent)
+    local sys = active[buf]
+    if not sys then
+        if not silent then
+            notify("nothing to cancel")
+        end
+        return false
+    end
+    active[buf] = nil
+    pcall(function()
+        sys:kill(15)
+    end)
+    clear_placeholder(buf)
+    return true
+end
+
 local function send_request(buf, api_key, diff)
+    cancel_request(buf, true)
+
     vim.api.nvim_buf_set_lines(buf, 0, 0, false, { "# ⏳ generating commit message..." })
 
     local payload = {
@@ -137,7 +159,8 @@ local function send_request(buf, api_key, diff)
     -- Use a small curl timeout below the vim.system one so curl's own message wins on TLE.
     local curl_timeout = math.max(5, math.floor(config.timeout_ms / 1000) - 5)
 
-    local ok, err = pcall(
+    local sys
+    local ok, err_or_sys = pcall(
         vim.system,
         {
             "curl",
@@ -157,6 +180,11 @@ local function send_request(buf, api_key, diff)
         { text = true, stdin = body, timeout = config.timeout_ms },
         function(res)
             vim.schedule(function()
+                if active[buf] ~= sys then
+                    -- cancelled or superseded by a newer request
+                    return
+                end
+                active[buf] = nil
                 if not clear_placeholder(buf) then
                     return
                 end
@@ -193,9 +221,13 @@ local function send_request(buf, api_key, diff)
     if not ok then
         vim.schedule(function()
             clear_placeholder(buf)
-            fail(buf, "failed to start curl:\n" .. tostring(err))
+            fail(buf, "failed to start curl:\n" .. tostring(err_or_sys))
         end)
+        return
     end
+
+    sys = err_or_sys
+    active[buf] = sys
 end
 
 --- @param buf integer|nil
@@ -269,6 +301,12 @@ function M.generate(buf, opts)
     end
 end
 
+--- @param buf integer|nil
+function M.cancel(buf)
+    buf = buf or vim.api.nvim_get_current_buf()
+    cancel_request(buf, false)
+end
+
 --- @param opts CommitMsgOpts|nil
 function M.setup(opts)
     config = vim.tbl_deep_extend("force", vim.deepcopy(defaults), opts or {})
@@ -284,10 +322,24 @@ function M.setup(opts)
         })
     end
 
+    -- Free in-flight handles tied to a buffer that's going away.
+    vim.api.nvim_create_autocmd("BufWipeout", {
+        group = group,
+        callback = function(ev)
+            cancel_request(ev.buf, true)
+        end,
+    })
+
     vim.api.nvim_create_user_command("CommitMsgGen", function()
         M.generate(nil, { force = true })
     end, {
         desc = "Generate a commit message via the Anthropic API (overwrites the current draft)",
+    })
+
+    vim.api.nvim_create_user_command("CommitMsgCancel", function()
+        M.cancel(nil)
+    end, {
+        desc = "Cancel an in-flight commit message generation for the current buffer",
     })
 end
 

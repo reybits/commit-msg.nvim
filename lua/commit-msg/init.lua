@@ -76,15 +76,20 @@ local function extract_text(stdout)
         return nil, "unexpected API response shape"
     end
     -- With extended thinking enabled the response may contain thinking blocks
-    -- before the text block; pick the first 'text' block we find.
+    -- before the text block; concatenate every non-empty 'text' block so that
+    -- a multi-block reply (rare, but possible) isn't truncated to the first one.
+    local parts = {}
     for _, block in ipairs(content) do
         if type(block) == "table" and block.type == "text" and type(block.text) == "string" then
             if block.text ~= "" then
-                return block.text, nil
+                table.insert(parts, block.text)
             end
         end
     end
-    return nil, "API returned no text block"
+    if #parts == 0 then
+        return nil, "API returned no text block"
+    end
+    return table.concat(parts, "\n\n"), nil
 end
 
 --- Find the first line that looks like the start of the git commit template.

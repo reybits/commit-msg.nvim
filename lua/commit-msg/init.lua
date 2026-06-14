@@ -96,6 +96,108 @@ local function wipe_draft(buf)
     end
 end
 
+local function clear_placeholder(buf)
+    if not vim.api.nvim_buf_is_valid(buf) then
+        return false
+    end
+    local l0 = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] or ""
+    if l0:match("generating commit message") then
+        vim.api.nvim_buf_set_lines(buf, 0, 1, false, {})
+    end
+    return true
+end
+
+local function fail(buf, msg)
+    notify(msg, vim.log.levels.ERROR)
+    if not vim.api.nvim_buf_is_valid(buf) then
+        return
+    end
+    local lines = { "# commit-msg failed:" }
+    for _, l in ipairs(vim.split(msg, "\n", { plain = true })) do
+        table.insert(lines, "# " .. l)
+    end
+    table.insert(lines, "# Write the message manually, or retry with :CommitMsgGen.")
+    vim.api.nvim_buf_set_lines(buf, 0, 0, false, lines)
+end
+
+local function send_request(buf, api_key, diff)
+    vim.api.nvim_buf_set_lines(buf, 0, 0, false, { "# ⏳ generating commit message..." })
+
+    local payload = {
+        model = config.model,
+        max_tokens = config.max_tokens,
+        system = config.system_prompt,
+        messages = { { role = "user", content = "Here is the staged diff:\n\n" .. diff } },
+    }
+    if type(config.thinking) == "table" then
+        payload.thinking = vim.tbl_extend("keep", config.thinking, { type = "enabled" })
+    end
+
+    local body = vim.json.encode(payload)
+    -- Use a small curl timeout below the vim.system one so curl's own message wins on TLE.
+    local curl_timeout = math.max(5, math.floor(config.timeout_ms / 1000) - 5)
+
+    local ok, err = pcall(
+        vim.system,
+        {
+            "curl",
+            "-s",
+            "--max-time",
+            tostring(curl_timeout),
+            config.api_url,
+            "-H",
+            "content-type: application/json",
+            "-H",
+            "x-api-key: " .. api_key,
+            "-H",
+            "anthropic-version: 2023-06-01",
+            "-d",
+            "@-",
+        },
+        { text = true, stdin = body, timeout = config.timeout_ms },
+        function(res)
+            vim.schedule(function()
+                if not clear_placeholder(buf) then
+                    return
+                end
+
+                if res.code == nil then
+                    fail(buf, "request timed out (no response).")
+                    return
+                end
+                if res.code ~= 0 then
+                    local detail = (res.stderr ~= nil and res.stderr ~= "") and res.stderr
+                        or ("curl exited with code " .. tostring(res.code))
+                    fail(buf, detail)
+                    return
+                end
+
+                local text, perr = extract_text(res.stdout or "")
+                if not text then
+                    fail(buf, perr)
+                    return
+                end
+
+                text = text:gsub("```%w*\n?", ""):gsub("^%s+", ""):gsub("\n+$", "")
+                vim.api.nvim_buf_set_lines(
+                    buf,
+                    0,
+                    0,
+                    false,
+                    vim.split(text, "\n", { plain = true })
+                )
+            end)
+        end
+    )
+
+    if not ok then
+        vim.schedule(function()
+            clear_placeholder(buf)
+            fail(buf, "failed to start curl:\n" .. tostring(err))
+        end)
+    end
+end
+
 --- @param buf integer|nil
 --- @param opts table|nil  { force = bool }
 function M.generate(buf, opts)
@@ -139,113 +241,31 @@ function M.generate(buf, opts)
     end
     vim.list_extend(diff_cmd, { "diff", "--staged" })
 
-    local diff = vim.fn.system(diff_cmd)
-    if vim.v.shell_error ~= 0 then
-        notify("git diff --staged failed: " .. vim.trim(diff), vim.log.levels.ERROR)
-        return
-    end
-    if diff == "" then
-        return
-    end
-
-    vim.api.nvim_buf_set_lines(buf, 0, 0, false, { "# ⏳ generating commit message..." })
-
-    local function clear_placeholder()
-        if not vim.api.nvim_buf_is_valid(buf) then
-            return false
-        end
-        local l0 = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] or ""
-        if l0:match("generating commit message") then
-            vim.api.nvim_buf_set_lines(buf, 0, 1, false, {})
-        end
-        return true
-    end
-
-    local function fail(msg)
-        notify(msg, vim.log.levels.ERROR)
-        if not vim.api.nvim_buf_is_valid(buf) then
-            return
-        end
-        local lines = { "# commit-msg failed:" }
-        for _, l in ipairs(vim.split(msg, "\n", { plain = true })) do
-            table.insert(lines, "# " .. l)
-        end
-        table.insert(lines, "# Write the message manually, or retry with :CommitMsgGen.")
-        vim.api.nvim_buf_set_lines(buf, 0, 0, false, lines)
-    end
-
-    local payload = {
-        model = config.model,
-        max_tokens = config.max_tokens,
-        system = config.system_prompt,
-        messages = { { role = "user", content = "Here is the staged diff:\n\n" .. diff } },
-    }
-    if type(config.thinking) == "table" then
-        payload.thinking = vim.tbl_extend("keep", config.thinking, { type = "enabled" })
-    end
-
-    local body = vim.json.encode(payload)
-    -- Use a small curl timeout below the vim.system one so curl's own message wins on TLE.
-    local curl_timeout = math.max(5, math.floor(config.timeout_ms / 1000) - 5)
-
     local ok, err = pcall(
         vim.system,
-        {
-            "curl",
-            "-s",
-            "--max-time",
-            tostring(curl_timeout),
-            config.api_url,
-            "-H",
-            "content-type: application/json",
-            "-H",
-            "x-api-key: " .. api_key,
-            "-H",
-            "anthropic-version: 2023-06-01",
-            "-d",
-            "@-",
-        },
-        { text = true, stdin = body, timeout = config.timeout_ms },
-        function(res)
-            vim.schedule(function()
-                if not clear_placeholder() then
-                    return
+        diff_cmd,
+        { text = true },
+        vim.schedule_wrap(function(res)
+            if not vim.api.nvim_buf_is_valid(buf) then
+                return
+            end
+            if res.code ~= 0 then
+                local detail = vim.trim(res.stderr or "")
+                if detail == "" then
+                    detail = "exit code " .. tostring(res.code)
                 end
-
-                if res.code == nil then
-                    fail("request timed out (no response).")
-                    return
-                end
-                if res.code ~= 0 then
-                    local detail = (res.stderr ~= nil and res.stderr ~= "") and res.stderr
-                        or ("curl exited with code " .. tostring(res.code))
-                    fail(detail)
-                    return
-                end
-
-                local text, perr = extract_text(res.stdout or "")
-                if not text then
-                    fail(perr)
-                    return
-                end
-
-                text = text:gsub("```%w*\n?", ""):gsub("^%s+", ""):gsub("\n+$", "")
-                vim.api.nvim_buf_set_lines(
-                    buf,
-                    0,
-                    0,
-                    false,
-                    vim.split(text, "\n", { plain = true })
-                )
-            end)
-        end
-    )
-
-    if not ok then
-        vim.schedule(function()
-            clear_placeholder()
-            fail("failed to start curl:\n" .. tostring(err))
+                notify("git diff --staged failed: " .. detail, vim.log.levels.ERROR)
+                return
+            end
+            local diff = res.stdout or ""
+            if diff == "" then
+                return
+            end
+            send_request(buf, api_key, diff)
         end)
+    )
+    if not ok then
+        notify("failed to start git: " .. tostring(err), vim.log.levels.ERROR)
     end
 end
 

@@ -9,7 +9,13 @@ with an empty draft, the staged diff is sent to the API and the result
 is inserted at the top of the buffer. The user keeps full control: edit,
 replace, or scrap it before saving.
 
-Requires Neovim 0.10+ and `curl` in $PATH.
+Requires Neovim 0.10+ and `curl` >= 7.55 in $PATH.
+
+The API key is written to a per-request chmod-600 temporary file and
+passed to curl via `-H @<file>` so that it never appears in the
+process command line (`ps aux` / `/proc/<pid>/cmdline`). The file is
+unlinked as soon as curl returns. `:checkhealth commit-msg` flags an
+older curl as an error.
 
 ==============================================================================
 COMMANDS                                                 *commit-msg-commands*

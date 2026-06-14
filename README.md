@@ -6,8 +6,8 @@ When `git commit` opens a buffer with an empty message, the staged diff is sent 
 
 ## Requirements
 
-- Neovim >= 0.10 (uses `vim.system`, `vim.json`, `virt_lines_above`, floating window footer).
-- `curl` in `$PATH`.
+- Neovim >= 0.10 (uses `vim.system`, `vim.json`, extmark virt_text, floating window footer).
+- `curl` >= 7.55 in `$PATH` (the plugin uses `-H @<file>` to pass the API key without exposing it in argv).
 - An Anthropic API key.
 
 ## Installation
@@ -39,6 +39,8 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 To change the variable name(s), set `api_key_env` in the plugin opts.
+
+The key is never placed on curl's command line. Before each request, it is written to a temporary file created with mode `0600` (atomic, via `vim.uv.fs_open`) and passed to curl as `-H @<file>`. The file is unlinked as soon as curl returns — on success, failure, timeout, cancel, or buffer wipe.
 
 ## Commands
 

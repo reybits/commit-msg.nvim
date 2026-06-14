@@ -147,17 +147,23 @@ end
 --- @type CommitMsgOpts
 local config = vim.deepcopy(defaults)
 
---- Map of buf -> SystemObj for the curl request currently in flight.
-local active = {}
+--- Per-buffer state. Fields are nil when unused:
+---   sys           : SystemObj of the in-flight curl request
+---   header_file   : path to the chmod-600 tmp file holding x-api-key
+---   spinner_timer : uv_timer animating the spinner overlay
+---   preview       : { win, buf } of the open floating preview
+local state = {}
+
+local function get_state(buf)
+    state[buf] = state[buf] or {}
+    return state[buf]
+end
 
 --- Dedicated namespace for the "generating..." spinner overlay.
 local ns = vim.api.nvim_create_namespace("commit_msg_spinner")
 
 local SPINNER_FRAMES = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 local SPINNER_INTERVAL_MS = 100
-
---- Map of buf -> uv_timer animating the spinner overlay.
-local spinner_timers = {}
 
 local function notify(msg, level)
     vim.notify("commit-msg: " .. msg, level or vim.log.levels.WARN)
@@ -286,11 +292,12 @@ local function wipe_draft(buf)
 end
 
 local function stop_spinner_timer(buf)
-    local timer = spinner_timers[buf]
-    if not timer then
+    local s = state[buf]
+    if not s or not s.spinner_timer then
         return
     end
-    spinner_timers[buf] = nil
+    local timer = s.spinner_timer
+    s.spinner_timer = nil
     pcall(timer.stop, timer)
     pcall(timer.close, timer)
 end
@@ -301,13 +308,15 @@ local function show_placeholder(buf)
     end
     stop_spinner_timer(buf)
 
+    local s = get_state(buf)
     local timer
     local frame = 1
     local function render()
         -- Identity check: a tick scheduled before stop_spinner_timer ran could
         -- otherwise re-create the extmark right after clear_placeholder wiped
         -- the namespace, leaving the spinner on screen forever.
-        if not vim.api.nvim_buf_is_valid(buf) or spinner_timers[buf] ~= timer then
+        local cur = state[buf]
+        if not vim.api.nvim_buf_is_valid(buf) or not cur or cur.spinner_timer ~= timer then
             return
         end
         local label = SPINNER_FRAMES[frame] .. " generating commit message..."
@@ -324,7 +333,7 @@ local function show_placeholder(buf)
     if not timer then
         return
     end
-    spinner_timers[buf] = timer
+    s.spinner_timer = timer
     render()
     timer:start(SPINNER_INTERVAL_MS, SPINNER_INTERVAL_MS, vim.schedule_wrap(render))
 end
@@ -386,18 +395,20 @@ end
 
 --- @return boolean killed
 local function cancel_request(buf, silent)
-    local rec = active[buf]
-    if not rec then
+    local s = state[buf]
+    if not s or not s.sys then
         if not silent then
             notify("nothing to cancel")
         end
         return false
     end
-    active[buf] = nil
+    local sys, header_file = s.sys, s.header_file
+    s.sys = nil
+    s.header_file = nil
     pcall(function()
-        rec.sys:kill(15)
+        sys:kill(15)
     end)
-    unlink_safe(rec.header_file)
+    unlink_safe(header_file)
     clear_placeholder(buf)
     return true
 end
@@ -414,15 +425,13 @@ local function insert_message(buf, text)
     end
 end
 
---- Map of main_buf -> { win, buf } for the preview window tied to that buffer.
-local previews = {}
-
 local function close_preview(main_buf)
-    local p = previews[main_buf]
-    if not p then
+    local s = state[main_buf]
+    if not s or not s.preview then
         return
     end
-    previews[main_buf] = nil
+    local p = s.preview
+    s.preview = nil
     if p.win and vim.api.nvim_win_is_valid(p.win) then
         vim.api.nvim_win_close(p.win, true)
     end
@@ -456,7 +465,7 @@ local function show_preview(main_buf, text, on_accept, on_regenerate)
         footer_pos = "center",
     })
 
-    previews[main_buf] = { win = pwin, buf = pbuf }
+    get_state(main_buf).preview = { win = pwin, buf = pbuf }
 
     local function accept()
         if not (pbuf and vim.api.nvim_buf_is_valid(pbuf)) then
@@ -606,12 +615,13 @@ local function send_request(buf, api_key, diff, req_opts)
             -- regardless of whether the request is still the active one.
             unlink_safe(header_file)
             vim.schedule(function()
-                local rec = active[buf]
-                if not rec or rec.sys ~= sys then
+                local s = state[buf]
+                if not s or s.sys ~= sys then
                     -- cancelled or superseded by a newer request
                     return
                 end
-                active[buf] = nil
+                s.sys = nil
+                s.header_file = nil
                 if not clear_placeholder(buf) then
                     return
                 end
@@ -664,7 +674,9 @@ local function send_request(buf, api_key, diff, req_opts)
     end
 
     sys = err_or_sys
-    active[buf] = { sys = sys, header_file = header_file }
+    local s = get_state(buf)
+    s.sys = sys
+    s.header_file = header_file
 end
 
 --- @param buf integer|nil
@@ -773,12 +785,14 @@ function M.setup(opts)
         })
     end
 
-    -- Free in-flight handles and preview state tied to a buffer that's going away.
+    -- Free everything tied to a buffer that's going away in one shot.
     vim.api.nvim_create_autocmd("BufWipeout", {
         group = group,
         callback = function(ev)
             cancel_request(ev.buf, true)
             close_preview(ev.buf)
+            stop_spinner_timer(ev.buf)
+            state[ev.buf] = nil
         end,
     })
 end

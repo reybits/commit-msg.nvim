@@ -130,8 +130,21 @@ function M.generate(buf, opts)
         return
     end
 
-    local diff = vim.fn.system("git diff --staged")
-    if vim.v.shell_error ~= 0 or diff == "" then
+    local buf_name = vim.api.nvim_buf_get_name(buf)
+    local cwd = buf_name ~= "" and vim.fs.dirname(buf_name) or nil
+    local diff_cmd = { "git" }
+    if cwd then
+        table.insert(diff_cmd, "-C")
+        table.insert(diff_cmd, cwd)
+    end
+    vim.list_extend(diff_cmd, { "diff", "--staged" })
+
+    local diff = vim.fn.system(diff_cmd)
+    if vim.v.shell_error ~= 0 then
+        notify("git diff --staged failed: " .. vim.trim(diff), vim.log.levels.ERROR)
+        return
+    end
+    if diff == "" then
         return
     end
 

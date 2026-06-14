@@ -6,7 +6,7 @@ When `git commit` opens a buffer with an empty message, the staged diff is sent 
 
 ## Requirements
 
-- Neovim >= 0.10 (uses `vim.system`, `vim.json`).
+- Neovim >= 0.10 (uses `vim.system`, `vim.json`, `virt_lines_above`, floating window footer).
 - `curl` in `$PATH`.
 - An Anthropic API key.
 
@@ -18,7 +18,7 @@ When `git commit` opens a buffer with an empty message, the staged diff is sent 
 {
     "reybits/commit-msg.nvim",
     ft = "gitcommit",
-    cmd = "CommitMsgGen",
+    cmd = { "CommitMsgGen", "CommitMsgCancel" },
     opts = {
         -- see "Configuration" below; the defaults are fine out of the box.
     },
@@ -38,7 +38,13 @@ export ANTHROPIC_API_KEY_COMMIT_MSG=sk-ant-...
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-To change the variable name(s), set `api_key_env` in the plugin opts (see below).
+To change the variable name(s), set `api_key_env` in the plugin opts.
+
+## Commands
+
+- `:CommitMsgGen` — regenerate the message for the current `gitcommit` buffer. Wipes any existing draft above the git template comments. Uses the cache.
+- `:CommitMsgGen!` — same, but bypasses the cache to force a fresh API call.
+- `:CommitMsgCancel` — cancel an in-flight generation for the current buffer (kills curl, removes the spinner).
 
 ## Configuration
 
@@ -46,34 +52,65 @@ Defaults:
 
 ```lua
 require("commit-msg").setup({
-    auto = true,         -- false disables the FileType autocmd; :CommitMsgGen still works
+    auto = true,                -- false disables the FileType autocmd; :CommitMsgGen still works.
     api_url = "https://api.anthropic.com/v1/messages",
     api_key_env = { "ANTHROPIC_API_KEY_COMMIT_MSG", "ANTHROPIC_API_KEY" },
     model = "claude-haiku-4-5",
     max_tokens = 512,
     timeout_ms = 35000,
-    system_prompt = nil, -- nil = built-in Conventional Commits prompt
-    thinking = nil,      -- { budget_tokens = N } to enable extended thinking
+
+    system_prompt = nil,        -- nil = built-in Conventional Commits prompt.
+    prompt_extra = nil,         -- appended to system_prompt with a blank-line separator.
+    thinking = nil,             -- { budget_tokens = N } to enable extended thinking.
+
+    should_generate = nil,      -- fun(buf):boolean predicate gating auto-generation.
+    notify_usage = false,       -- on success, notify the model id and token usage.
+
+    max_diff_bytes = 200000,    -- truncate the diff before sending; 0 or nil disables.
+    secret_scan = "warn",       -- "warn" | "abort" | false: pre-flight credential pattern check.
+    include_paths = true,       -- prepend the list of changed paths to the user message.
+
+    cache = true,               -- cache responses under stdpath('cache')/commit-msg.
+    preview = false,            -- show the result in a floating window before insert.
 })
 ```
 
-Notes:
+### Notes
 
 - `auto = false` keeps the plugin opt-in: nothing happens when a `gitcommit` buffer opens, and `:CommitMsgGen` is the only entry point.
 - `api_key_env` accepts a string or a list of strings; the first env var with a non-empty value is used.
 - `thinking` is forwarded to the API as `{ type = "enabled", budget_tokens = N }`. It produces a more deliberate message at the cost of latency and tokens. Only supported by models with extended thinking (e.g. `claude-haiku-4-5`, `claude-sonnet-4-x`).
-- `system_prompt`, if set, replaces the default prompt entirely.
+- `prompt_extra` is appended to the built-in `system_prompt`; use it to add project conventions (ticket prefix, scope rule) without rewriting the default prompt.
+- `should_generate` only gates the FileType autocmd. `:CommitMsgGen` always runs because it is an explicit request.
+- `secret_scan` checks the diff for common patterns: AWS keys, `sk-ant-` tokens, Google API keys, GitHub PATs, Slack tokens, and PEM private-key headers. `"abort"` stops the request, `"warn"` notifies and continues.
+- `cache` keys responses by `sha256(model + system + user_msg)`. The same diff produces a cache hit; `:CommitMsgGen!` forces a regeneration.
 
-## Commands
+### Per-buffer opt-out
 
-- `:CommitMsgGen` — regenerate the message for the current `gitcommit` buffer. Wipes any existing draft above the git template comments and replaces it with a fresh response.
+Set `vim.b.commit_msg_skip = true` to disable auto-generation for that buffer. Useful for amend flows or for buffers you do not want the model to touch.
+
+### Preview window
+
+With `preview = true`, the result opens in a centered floating window instead of being inserted directly. Keymaps:
+
+- `<CR>` or `a` — accept (insert into the gitcommit buffer; edits made in the preview are kept)
+- `r` — regenerate (bypasses the cache)
+- `q` or `<Esc>` — cancel (close without inserting)
+
+## Health check
+
+```vim
+:checkhealth commit-msg
+```
+
+Verifies Neovim version, `curl`, `git`, the API key env var, and the cache directory.
 
 ## How it works
 
-1. On `FileType gitcommit`, if the first line is empty, the plugin runs `git diff --staged`.
+1. On `FileType gitcommit` (or when `:CommitMsgGen` runs), `git diff --staged` is invoked asynchronously in the buffer's repository.
 2. The diff is sent to the Anthropic Messages API with a system prompt that constrains the output to a Conventional Commits message.
-3. The response is inserted at the top of the buffer.
-4. The placeholder `# ⏳ generating commit message...` shows during the call and is cleaned up afterwards (it's a comment line, so it's ignored by git even if something goes wrong).
+3. The response is post-processed (markdown fences stripped, whitespace trimmed) and either inserted at the top of the buffer or shown in a preview window.
+4. The placeholder `⏳ generating commit message...` is shown as a virtual line during the call and removed afterwards. Since it is a virtual line (extmark), it never touches the buffer text.
 
 ## License
 

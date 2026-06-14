@@ -46,6 +46,7 @@ Defaults:
 
 ```lua
 require("commit-msg").setup({
+    auto = true,         -- false disables the FileType autocmd; :CommitMsgGen still works
     api_url = "https://api.anthropic.com/v1/messages",
     api_key_env = { "ANTHROPIC_API_KEY_COMMIT_MSG", "ANTHROPIC_API_KEY" },
     model = "claude-haiku-4-5",
@@ -58,6 +59,7 @@ require("commit-msg").setup({
 
 Notes:
 
+- `auto = false` keeps the plugin opt-in: nothing happens when a `gitcommit` buffer opens, and `:CommitMsgGen` is the only entry point.
 - `api_key_env` accepts a string or a list of strings; the first env var with a non-empty value is used.
 - `thinking` is forwarded to the API as `{ type = "enabled", budget_tokens = N }`. It produces a more deliberate message at the cost of latency and tokens. Only supported by models with extended thinking (e.g. `claude-haiku-4-5`, `claude-sonnet-4-x`).
 - `system_prompt`, if set, replaces the default prompt entirely.

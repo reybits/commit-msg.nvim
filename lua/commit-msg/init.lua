@@ -14,6 +14,7 @@ local DEFAULT_SYSTEM_PROMPT = table.concat({
 }, " ")
 
 --- @class CommitMsgOpts
+--- @field auto boolean|nil             Auto-generate on FileType gitcommit (default: true). Set false to use only :CommitMsgGen.
 --- @field api_url string|nil           Anthropic API endpoint (default: messages endpoint).
 --- @field api_key_env string[]|string|nil  Env var name(s) to look up the API key. First non-empty wins.
 --- @field model string|nil             Model id (default: claude-haiku-4-5).
@@ -24,6 +25,7 @@ local DEFAULT_SYSTEM_PROMPT = table.concat({
 
 --- @type CommitMsgOpts
 local defaults = {
+    auto = true,
     api_url = "https://api.anthropic.com/v1/messages",
     api_key_env = { "ANTHROPIC_API_KEY_COMMIT_MSG", "ANTHROPIC_API_KEY" },
     model = "claude-haiku-4-5",
@@ -242,13 +244,15 @@ function M.setup(opts)
     config = vim.tbl_deep_extend("force", vim.deepcopy(defaults), opts or {})
 
     local group = vim.api.nvim_create_augroup("commit_msg", { clear = true })
-    vim.api.nvim_create_autocmd("FileType", {
-        group = group,
-        pattern = "gitcommit",
-        callback = function(ev)
-            M.generate(ev.buf)
-        end,
-    })
+    if config.auto then
+        vim.api.nvim_create_autocmd("FileType", {
+            group = group,
+            pattern = "gitcommit",
+            callback = function(ev)
+                M.generate(ev.buf)
+            end,
+        })
+    end
 
     vim.api.nvim_create_user_command("CommitMsgGen", function()
         M.generate(nil, { force = true })

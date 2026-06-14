@@ -25,6 +25,7 @@ local DEFAULT_SYSTEM_PROMPT = table.concat({
 --- @field should_generate fun(buf:integer):boolean|nil  Predicate gating auto-generation; return false to skip.
 --- @field notify_usage boolean|nil     Notify model id and token usage on success (default: false).
 --- @field max_diff_bytes integer|nil   Truncate the diff before sending if it exceeds this many bytes. 0 or nil disables.
+--- @field secret_scan "warn"|"abort"|false|nil  Pre-flight scan for common credential patterns. "warn" notifies and sends, "abort" blocks the request, false skips the scan (default: "warn").
 
 --- @type CommitMsgOpts
 local defaults = {
@@ -39,7 +40,26 @@ local defaults = {
     should_generate = nil,
     notify_usage = false,
     max_diff_bytes = 200000,
+    secret_scan = "warn",
 }
+
+local SECRET_PATTERNS = {
+    { "AWS access key", "AKIA[0-9A-Z]+" },
+    { "Anthropic API key", "sk%-ant%-[%w_%-]+" },
+    { "Google API key", "AIza[%w_%-]+" },
+    { "GitHub token", "gh[pousr]_[%w]+" },
+    { "Slack token", "xox[abprs]%-[%w_%-]+" },
+    { "private key block", "%-%-%-%-%-BEGIN [%w ]+PRIVATE KEY" },
+}
+
+local function scan_for_secrets(diff)
+    for _, p in ipairs(SECRET_PATTERNS) do
+        if diff:find(p[2]) then
+            return p[1]
+        end
+    end
+    return nil
+end
 
 --- @type CommitMsgOpts
 local config = vim.deepcopy(defaults)
@@ -197,6 +217,23 @@ end
 
 local function send_request(buf, api_key, diff)
     cancel_request(buf, true)
+
+    if config.secret_scan then
+        local hit = scan_for_secrets(diff)
+        if hit then
+            if config.secret_scan == "abort" then
+                notify(
+                    "aborting: possible " .. hit .. " in diff (set secret_scan=false to override)",
+                    vim.log.levels.ERROR
+                )
+                return
+            end
+            notify(
+                "possible " .. hit .. " in diff; sending anyway (set secret_scan=false to silence)",
+                vim.log.levels.WARN
+            )
+        end
+    end
 
     local limit = config.max_diff_bytes
     if type(limit) == "number" and limit > 0 and #diff > limit then

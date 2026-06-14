@@ -87,16 +87,46 @@ local function extract_text(stdout)
     return nil, "API returned no text block"
 end
 
---- Drop existing draft lines above the first git-template comment.
-local function wipe_draft(buf)
-    local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-    local cut = #lines
+--- Find the first line that looks like the start of the git commit template.
+--- Strong signatures match the standard English templates; the fallback
+--- catches a run of three or more consecutive '#' lines, which holds for
+--- localized templates too. Returns 1-based line index or nil.
+local function find_template_start(lines)
     for i, line in ipairs(lines) do
-        if line:match("^#") then
-            cut = i - 1
-            break
+        if
+            line:match("^#%s*Please enter")
+            or line:match("^#%s*On branch ")
+            or line:match("^#%s*HEAD detached")
+            or line:match("^#%s*-+%s*>8")
+        then
+            return i
         end
     end
+
+    local run, run_start = 0, nil
+    for i, line in ipairs(lines) do
+        if line:match("^#") then
+            if run == 0 then
+                run_start = i
+            end
+            run = run + 1
+            if run >= 3 then
+                return run_start
+            end
+        else
+            run, run_start = 0, nil
+        end
+    end
+    return nil
+end
+
+--- Drop existing draft lines above the git-template comments. If no
+--- template is detected (rare for a real gitcommit buffer), clear the
+--- whole buffer so :CommitMsgGen still starts from a clean slate.
+local function wipe_draft(buf)
+    local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    local start = find_template_start(lines)
+    local cut = start and (start - 1) or #lines
     if cut > 0 then
         vim.api.nvim_buf_set_lines(buf, 0, cut, false, {})
     end

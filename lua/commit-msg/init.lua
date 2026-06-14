@@ -291,10 +291,8 @@ local function stop_spinner_timer(buf)
         return
     end
     spinner_timers[buf] = nil
-    pcall(function()
-        timer:stop()
-        timer:close()
-    end)
+    pcall(timer.stop, timer)
+    pcall(timer.close, timer)
 end
 
 local function show_placeholder(buf)

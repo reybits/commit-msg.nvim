@@ -24,6 +24,7 @@ local DEFAULT_SYSTEM_PROMPT = table.concat({
 --- @field thinking table|nil           { budget_tokens = N } to enable extended thinking. nil = disabled.
 --- @field should_generate fun(buf:integer):boolean|nil  Predicate gating auto-generation; return false to skip.
 --- @field notify_usage boolean|nil     Notify model id and token usage on success (default: false).
+--- @field max_diff_bytes integer|nil   Truncate the diff before sending if it exceeds this many bytes. 0 or nil disables.
 
 --- @type CommitMsgOpts
 local defaults = {
@@ -37,6 +38,7 @@ local defaults = {
     thinking = nil,
     should_generate = nil,
     notify_usage = false,
+    max_diff_bytes = 200000,
 }
 
 --- @type CommitMsgOpts
@@ -195,6 +197,15 @@ end
 
 local function send_request(buf, api_key, diff)
     cancel_request(buf, true)
+
+    local limit = config.max_diff_bytes
+    if type(limit) == "number" and limit > 0 and #diff > limit then
+        notify(
+            string.format("diff is %d bytes, truncating to %d", #diff, limit),
+            vim.log.levels.INFO
+        )
+        diff = diff:sub(1, limit) .. "\n\n[... diff truncated]"
+    end
 
     show_placeholder(buf)
 

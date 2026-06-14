@@ -28,6 +28,7 @@ local DEFAULT_SYSTEM_PROMPT = table.concat({
 --- @field max_diff_bytes integer|nil   Truncate the diff before sending if it exceeds this many bytes. 0 or nil disables.
 --- @field secret_scan "warn"|"abort"|false|nil  Pre-flight scan for common credential patterns. "warn" notifies and sends, "abort" blocks the request, false skips the scan (default: "warn").
 --- @field include_paths boolean|nil   Prepend the list of changed paths to the user message so the model can pick a better scope (default: true).
+--- @field cache boolean|nil           Cache responses keyed by (model + system + user message) under stdpath('cache'). :CommitMsgGen! bypasses lookup (default: true).
 
 --- @type CommitMsgOpts
 local defaults = {
@@ -45,6 +46,7 @@ local defaults = {
     max_diff_bytes = 200000,
     secret_scan = "warn",
     include_paths = true,
+    cache = true,
 }
 
 local SECRET_PATTERNS = {
@@ -63,6 +65,29 @@ local function scan_for_secrets(diff)
         end
     end
     return nil
+end
+
+local function cache_dir()
+    local dir = vim.fs.joinpath(vim.fn.stdpath("cache"), "commit-msg")
+    vim.fn.mkdir(dir, "p")
+    return dir
+end
+
+local function cache_lookup(key)
+    local path = vim.fs.joinpath(cache_dir(), key)
+    if vim.fn.filereadable(path) == 0 then
+        return nil
+    end
+    local ok, data = pcall(vim.fn.readfile, path, "b")
+    if not ok then
+        return nil
+    end
+    return table.concat(data, "\n")
+end
+
+local function cache_store(key, text)
+    local path = vim.fs.joinpath(cache_dir(), key)
+    pcall(vim.fn.writefile, vim.split(text, "\n", { plain = true }), path, "b")
 end
 
 --- Extract the b-side file paths from a unified diff header sequence.
@@ -231,7 +256,20 @@ local function cancel_request(buf, silent)
     return true
 end
 
-local function send_request(buf, api_key, diff)
+local function insert_message(buf, text)
+    if not vim.api.nvim_buf_is_valid(buf) then
+        return
+    end
+    local lines = vim.split(text, "\n", { plain = true })
+    vim.api.nvim_buf_set_lines(buf, 0, 0, false, lines)
+    local win = vim.fn.bufwinid(buf)
+    if win ~= -1 then
+        vim.api.nvim_win_set_cursor(win, { 1, #(lines[1] or "") })
+    end
+end
+
+local function send_request(buf, api_key, diff, req_opts)
+    req_opts = req_opts or {}
     cancel_request(buf, true)
 
     if config.secret_scan then
@@ -260,8 +298,6 @@ local function send_request(buf, api_key, diff)
         diff = diff:sub(1, limit) .. "\n\n[... diff truncated]"
     end
 
-    show_placeholder(buf)
-
     local system = config.system_prompt or ""
     if type(config.prompt_extra) == "string" and config.prompt_extra ~= "" then
         system = system .. "\n\n" .. config.prompt_extra
@@ -277,6 +313,18 @@ local function send_request(buf, api_key, diff)
                 .. user_msg
         end
     end
+
+    local cache_key = vim.fn.sha256(config.model .. "|" .. system .. "|" .. user_msg)
+    if config.cache and not req_opts.no_cache then
+        local hit = cache_lookup(cache_key)
+        if hit then
+            insert_message(buf, hit)
+            notify("loaded from cache", vim.log.levels.INFO)
+            return
+        end
+    end
+
+    show_placeholder(buf)
 
     local payload = {
         model = config.model,
@@ -340,12 +388,10 @@ local function send_request(buf, api_key, diff)
                 end
 
                 local text = info.text:gsub("```%w*\n?", ""):gsub("^%s+", ""):gsub("\n+$", "")
-                local lines = vim.split(text, "\n", { plain = true })
-                vim.api.nvim_buf_set_lines(buf, 0, 0, false, lines)
+                insert_message(buf, text)
 
-                local win = vim.fn.bufwinid(buf)
-                if win ~= -1 then
-                    vim.api.nvim_win_set_cursor(win, { 1, #(lines[1] or "") })
+                if config.cache then
+                    cache_store(cache_key, text)
                 end
 
                 if config.notify_usage and info.usage then
@@ -438,7 +484,7 @@ function M.generate(buf, opts)
             if diff == "" then
                 return
             end
-            send_request(buf, api_key, diff)
+            send_request(buf, api_key, diff, { no_cache = opts.no_cache })
         end)
     )
     if not ok then
@@ -484,10 +530,11 @@ function M.setup(opts)
         end,
     })
 
-    vim.api.nvim_create_user_command("CommitMsgGen", function()
-        M.generate(nil, { force = true })
+    vim.api.nvim_create_user_command("CommitMsgGen", function(o)
+        M.generate(nil, { force = true, no_cache = o.bang })
     end, {
-        desc = "Generate a commit message via the Anthropic API (overwrites the current draft)",
+        bang = true,
+        desc = "Generate a commit message via the Anthropic API (overwrites the current draft). :CommitMsgGen! bypasses the cache.",
     })
 
     vim.api.nvim_create_user_command("CommitMsgCancel", function()

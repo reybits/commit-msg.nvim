@@ -289,6 +289,11 @@ local function wipe_draft(buf)
     if cut > 0 then
         vim.api.nvim_buf_set_lines(buf, 0, cut, false, {})
     end
+    -- Keep an empty first line so the spinner anchors there, not on a template comment.
+    local first = vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
+    if first == nil or first ~= "" then
+        vim.api.nvim_buf_set_lines(buf, 0, 0, false, { "" })
+    end
 end
 
 local function stop_spinner_timer(buf)
